@@ -270,78 +270,116 @@ class MarineRunner(Runner):
     @torch.no_grad()
     def collect(self, step):
         self.trainer.prep_rollout()
+        if self.algorithm_name == 'hetgat_mappo':
+            value, action, action_log_prob, rnn_state, rnn_obs, rnn_state_critic, _ \
+                = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
+                                                np.concatenate(self.buffer.obs[step]),
+                                                np.concatenate(self.buffer.rnn_states[step]),
+                                                np.concatenate(self.buffer.rnn_obs[step]),
+                                                np.concatenate(self.buffer.rnn_states_critic[step]),
+                                                np.concatenate(self.buffer.masks[step]),
+                                                np.concatenate(self.buffer.available_actions[step]))
 
-        value, action, action_log_prob, rnn_state, rnn_obs, rnn_state_critic, _, _, _, _ \
-            = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
-                                              np.concatenate(self.buffer.obs[step]),
-                                              np.concatenate(self.buffer.rnn_states[step]),
-                                              np.concatenate(self.buffer.rnn_obs[step]),
-                                              np.concatenate(self.buffer.rnn_states_critic[step]),
-                                              np.concatenate(self.buffer.masks[step]),
-                                              np.concatenate(self.buffer.available_actions[step]))
+            values = np.array(np.split(_t2n(value), self.n_rollout_threads))
+            actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
+            action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
+            rnn_states = np.array(np.split(_t2n(rnn_state), self.n_rollout_threads))
+            if self.all_args.tensor_obs or not self.all_args.binarized_obs_comm:
+                rnn_obs = np.array(np.split(_t2n(rnn_obs), self.n_rollout_threads))
+            rnn_states_critic = np.array(np.split(_t2n(rnn_state_critic), self.n_rollout_threads))
 
-        values = np.array(np.split(_t2n(value), self.n_rollout_threads))
-        actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
-        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
-        rnn_states = np.array(np.split(_t2n(rnn_state), self.n_rollout_threads))
-        if self.all_args.tensor_obs or not self.all_args.binarized_obs_comm:
-            rnn_obs = np.array(np.split(_t2n(rnn_obs), self.n_rollout_threads))
-        rnn_states_critic = np.array(np.split(_t2n(rnn_state_critic), self.n_rollout_threads))
+            return values, actions, action_log_probs, rnn_states, rnn_obs, rnn_states_critic
+        else:
+            value, action, action_log_prob, rnn_states, rnn_states_critic \
+                = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
+                                                  np.concatenate(self.buffer.obs[step]),
+                                                  np.concatenate(self.buffer.rnn_states[step]),
+                                                  np.concatenate(self.buffer.rnn_states_critic[step]),
+                                                  np.concatenate(self.buffer.masks[step]))
+            # [self.envs, agents, dim]
+            values = np.array(np.split(_t2n(value), self.n_rollout_threads))
+            actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
+            action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
+            rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
+            rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
+            # rearrange action
+            if self.envs.action_space[0].__class__.__name__ == 'MultiDiscrete':
+                for i in range(self.envs.action_space[0].shape):
+                    uc_actions_env = np.eye(self.envs.action_space[0].high[i] + 1)[actions[:, :, i]]
+                    if i == 0:
+                        actions_env = uc_actions_env
+                    else:
+                        actions_env = np.concatenate((actions_env, uc_actions_env), axis=2)
+            elif self.envs.action_space[0].__class__.__name__ == 'Discrete':
+                actions_env = np.squeeze(np.eye(self.envs.action_space[0].n)[actions], 2)
+            else:
+                raise NotImplementedError
+            return values, actions, action_log_probs, rnn_states, None, rnn_states_critic
 
-        return values, actions, action_log_probs, rnn_states, rnn_obs, rnn_states_critic
 
     def insert(self, data):
         obs, share_obs, rewards, dones, infos, available_actions, values, actions, action_log_probs, rnn_states, rnn_obs, rnn_states_critic = data
 
 
-        dones_env = np.all(dones, axis=1)
-        if self.all_args.use_LSTM:
+        if self.algorithm_name == 'hetgat_mappo':
+            dones_env = np.all(dones, axis=1)
+            if self.all_args.use_LSTM:
 
-            if self.all_args.tensor_obs:
+                if self.all_args.tensor_obs:
 
-                rnn_states = np.expand_dims(rnn_states, axis=2)
-                rnn_obs = np.expand_dims(rnn_obs, axis=2)
+                    rnn_states = np.expand_dims(rnn_states, axis=2)
+                    rnn_obs = np.expand_dims(rnn_obs, axis=2)
 
 
-                rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents * 2,
-                                                          self.recurrent_N, 128), dtype=np.float32)
+                    rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents * 2,
+                                                            self.recurrent_N, 128), dtype=np.float32)
 
-                rnn_obs[dones_env == True] = np.zeros(((dones_env == True).sum(), (self.all_args.num_P + self.all_args.num_A) * 2,
-                                                          self.recurrent_N, 16), dtype=np.float32)
+                    rnn_obs[dones_env == True] = np.zeros(((dones_env == True).sum(), (self.all_args.num_P + self.all_args.num_A) * 2,
+                                                            self.recurrent_N, 16), dtype=np.float32)
 
+
+                else:
+                    if not self.all_args.binarized_obs_comm:
+                        rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents * 2,
+                                                                self.recurrent_N, self.hidden_size),  dtype=np.float32)
+                        rnn_obs[dones_env == True] = np.zeros(((dones_env == True).sum(), (self.all_args.num_P + self.all_args.num_A) * 2,
+                                                            self.recurrent_N, 16), dtype=np.float32)
+
+
+                rnn_states_critic[dones_env == True] = np.zeros(((dones_env == True).sum(),
+                                                                self.num_agents, *self.buffer.rnn_states_critic.shape[3:]),
+                                                                dtype=np.float32)
 
             else:
-                if not self.all_args.binarized_obs_comm:
-                    rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents * 2,
-                                                              self.recurrent_N, self.hidden_size),  dtype=np.float32)
-                    rnn_obs[dones_env == True] = np.zeros(((dones_env == True).sum(), (self.all_args.num_P + self.all_args.num_A) * 2,
-                                                           self.recurrent_N, 16), dtype=np.float32)
+                rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size),
+                                                        dtype=np.float32)
+                rnn_states_critic[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, *self.buffer.rnn_states_critic.shape[3:]),
+                                                                dtype=np.float32)
 
+            masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
+            masks[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
 
-            rnn_states_critic[dones_env == True] = np.zeros(((dones_env == True).sum(),
-                                                             self.num_agents, *self.buffer.rnn_states_critic.shape[3:]),
-                                                            dtype=np.float32)
+            active_masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
+            active_masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
+            active_masks[dones_env == True] = np.ones(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
 
+            bad_masks = np.array([[[0.0] if info[agent_id]['bad_transition'] else [1.0] for agent_id in range(self.num_agents)] for info in infos])
+
+            if not self.use_centralized_V:
+                share_obs = obs
+
+            self.buffer.insert(share_obs, obs, rnn_states, rnn_obs, rnn_states_critic,
+                               actions, action_log_probs, values, rewards, masks, bad_masks, active_masks, available_actions)
         else:
-            rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size),
-                                                     dtype=np.float32)
-            rnn_states_critic[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, *self.buffer.rnn_states_critic.shape[3:]),
-                                                            dtype=np.float32)
+            rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size),
+                                                 dtype=np.float32)
+            rnn_states_critic[dones == True] = np.zeros(
+                ((dones == True).sum(), *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
+            masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
+            masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
 
-        masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        masks[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
-
-        active_masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        active_masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
-        active_masks[dones_env == True] = np.ones(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
-
-        bad_masks = np.array([[[0.0] if info[agent_id]['bad_transition'] else [1.0] for agent_id in range(self.num_agents)] for info in infos])
-
-        if not self.use_centralized_V:
-            share_obs = obs
-
-        self.buffer.insert(share_obs, obs, rnn_states, rnn_obs, rnn_states_critic,
-                           actions, action_log_probs, values, rewards, masks, bad_masks, active_masks, available_actions)
+            self.buffer.insert_rmappo(share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs, values,
+                               rewards, masks)
 
 
 
@@ -411,20 +449,27 @@ class MarineRunner(Runner):
 
             self.trainer.prep_rollout()
 
-            eval_actions, eval_rnn_states, eval_rnn_obs = \
-                self.trainer.policy.act(
-                    # np.concatenate(eval_share_obs),
-                    np.concatenate(eval_obs),
-                    np.concatenate(eval_rnn_states),
-                    np.concatenate(eval_rnn_obs),
-                    np.concatenate(eval_masks),
-                    np.concatenate(eval_available_actions),
-                    deterministic=True)
+            if self.algorithm_name == 'hetgat_mappo':
+                eval_actions, eval_rnn_states, eval_rnn_obs = \
+                    self.trainer.policy.act(
+                        # np.concatenate(eval_share_obs),
+                        np.concatenate(eval_obs),
+                        np.concatenate(eval_rnn_states),
+                        np.concatenate(eval_rnn_obs),
+                        np.concatenate(eval_masks),
+                        np.concatenate(eval_available_actions),
+                        deterministic=True)
+            else:
+                eval_actions, eval_rnn_states = self.trainer.policy.act(np.concatenate(eval_obs),
+                                                                       np.concatenate(eval_rnn_states),
+                                                                       np.concatenate(eval_masks),
+                                                                       deterministic=True)
 
             eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
-            if self.all_args.tensor_obs or not self.all_args.binarized_obs_comm:
-                eval_rnn_obs = np.array(np.split(_t2n(eval_rnn_obs), self.n_eval_rollout_threads))
+            if self.algorithm_name == 'hetgat_mappo':
+                if self.all_args.tensor_obs or not self.all_args.binarized_obs_comm:
+                    eval_rnn_obs = np.array(np.split(_t2n(eval_rnn_obs), self.n_eval_rollout_threads))
             # rnn_obs does not affect in binarized obs comm scenarios
 
             # Obser reward and next obs

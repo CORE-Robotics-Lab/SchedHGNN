@@ -200,6 +200,8 @@ def get_config():
                         default=False, help="Whether to use stacked_frames")
     parser.add_argument("--hidden_size", type=int, default=64,
                         help="Dimension of hidden layers for actor/critic networks") 
+    parser.add_argument("--hetnet_hidden_dim", type=int, default=16,
+                        help="Dimension of hidden layers for hetgat layers")
     parser.add_argument("--num_heads", type=int, default=4,
                         help="Dimension of prediction heads")
     parser.add_argument("--layer_N", type=int, default=1,

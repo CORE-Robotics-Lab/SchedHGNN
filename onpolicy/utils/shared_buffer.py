@@ -92,7 +92,7 @@ class SharedReplayBuffer(object):
                     self.rnn_obs = np.zeros((self.episode_length + 1, self.n_rollout_threads, num_agents * 2,
                                              self.recurrent_N, 16), dtype=np.float32)
 
-        elif args.algorithm_name == 'my_mappo':
+        elif args.algorithm_name == 'my_mappo' or args.algorithm_name == 'rmappo':
             self.rnn_states = np.zeros(
                 (self.episode_length + 1, self.n_rollout_threads, num_agents, self.recurrent_N, self.hidden_size),
                 dtype=np.float32)
@@ -160,6 +160,42 @@ class SharedReplayBuffer(object):
         self.rewards[self.step] = rewards.copy()
         self.masks[self.step + 1] = masks.copy()
         
+        if bad_masks is not None:
+            self.bad_masks[self.step + 1] = bad_masks.copy()
+        if active_masks is not None:
+            self.active_masks[self.step + 1] = active_masks.copy()
+        if available_actions is not None:
+            self.available_actions[self.step + 1] = available_actions.copy()
+
+        self.step = (self.step + 1) % self.episode_length
+
+    def insert_rmappo(self, share_obs, obs, rnn_states_actor, rnn_states_critic, actions, action_log_probs,
+               value_preds, rewards, masks, bad_masks=None, active_masks=None, available_actions=None):
+        """
+        Insert data into the buffer.
+        :param share_obs: (argparse.Namespace) arguments containing relevant model, policy, and env information.
+        :param obs: (np.ndarray) local agent observations.
+        :param rnn_states_actor: (np.ndarray) RNN states for actor network. RNN states associated with the state input.
+        :param rnn_states_critic: (np.ndarray) RNN states for critic network.
+        :param actions:(np.ndarray) actions taken by agents.
+        :param action_log_probs:(np.ndarray) log probs of actions taken by agents
+        :param value_preds: (np.ndarray) value function prediction at each step.
+        :param rewards: (np.ndarray) reward collected at each step.
+        :param masks: (np.ndarray) denotes whether the environment has terminated or not.
+        :param bad_masks: (np.ndarray) action space for agents.
+        :param active_masks: (np.ndarray) denotes whether an agent is active or dead in the env.
+        :param available_actions: (np.ndarray) actions available to each agent. If None, all actions are available.
+        """
+        self.share_obs[self.step + 1] = share_obs.copy()
+        self.obs[self.step + 1] = obs.copy()
+        self.rnn_states[self.step + 1] = rnn_states_actor.copy()
+        self.rnn_states_critic[self.step + 1] = rnn_states_critic.copy()
+        self.actions[self.step] = actions.copy()
+        self.action_log_probs[self.step] = action_log_probs.copy()
+        self.value_preds[self.step] = value_preds.copy()
+        self.rewards[self.step] = rewards.copy()
+        self.masks[self.step + 1] = masks.copy()
+
         if bad_masks is not None:
             self.bad_masks[self.step + 1] = bad_masks.copy()
         if active_masks is not None:
@@ -246,7 +282,8 @@ class SharedReplayBuffer(object):
         self.share_obs[0] = self.share_obs[-1].copy()
         self.obs[0] = self.obs[-1].copy()
         self.rnn_states[0] = self.rnn_states[-1].copy()
-        self.rnn_obs[0] = self.rnn_obs[-1].copy()
+        if self.args.algorithm_name == 'hetgat_mappo':
+            self.rnn_obs[0] = self.rnn_obs[-1].copy()
         self.rnn_states_critic[0] = self.rnn_states_critic[-1].copy()
         self.masks[0] = self.masks[-1].copy()
         self.bad_masks[0] = self.bad_masks[-1].copy()
@@ -341,8 +378,10 @@ class SharedReplayBuffer(object):
 
         if hasattr(self.args, 'tensor_obs') and self.args.tensor_obs:
             rnn_states_batch = self.rnn_states[:-1].reshape(-1, 2 * num_agents, self.args.stat_hidden_dim)
-        else:
+        elif self.args.algorithm_name == 'hetgat_mappo':
             rnn_states_batch = self.rnn_states[:-1].reshape(-1, 2 * num_agents, self.args.hidden_size)
+        else:
+            rnn_states_batch = self.rnn_states[:-1].reshape(-1, num_agents, self.args.hidden_size)
 
 
         rnn_states_critic_batch = self.rnn_states_critic[:-1].reshape(-1, *self.rnn_states_critic.shape[3:])

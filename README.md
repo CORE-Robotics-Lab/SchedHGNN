@@ -7,6 +7,13 @@ This repository contains
 
 ## Note
 You might have to add your own path variables in order to run the codes smoothly.
+Please change the path of wave information in line 187 of waves.py
+
+## Installation
+To install the framework,
+```
+python setup.py develop
+```
 
 ## Run
 To change the level of game, please change the variable ```MODE``` defined in line 7 and 8 in the code ```waves.py```
